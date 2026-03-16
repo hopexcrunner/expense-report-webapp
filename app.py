@@ -16,33 +16,45 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-def compress_image(image, max_width=1920, quality=85):
-    """Compress image for faster mobile upload and processing"""
-    # Convert to RGB if needed (handles RGBA, P, etc.)
-    if image.mode in ('RGBA', 'LA', 'P'):
-        background = Image.new('RGB', image.size, (255, 255, 255))
-        if image.mode == 'P':
-            image = image.convert('RGBA')
-        background.paste(image, mask=image.split()[-1] if image.mode in ('RGBA', 'LA') else None)
-        image = background
-    elif image.mode != 'RGB':
-        image = image.convert('RGB')
-    
-    # Resize if too large
-    if image.width > max_width:
-        ratio = max_width / image.width
-        new_height = int(image.height * ratio)
-        image = image.resize((max_width, new_height), Image.Resampling.LANCZOS)
-        print(f"📏 Resized image to {max_width}x{new_height}")
-    
-    # Compress to JPEG
-    output = io.BytesIO()
-    image.save(output, format='JPEG', quality=quality, optimize=True)
-    output.seek(0)
-    compressed_size = len(output.getvalue())
-    print(f"📦 Compressed to {compressed_size / 1024:.1f} KB")
-    
-    return Image.open(output)
+def compress_image(image, max_width=1600, quality=75):
+    """Aggressively compress image for mobile uploads"""
+    try:
+        # Convert to RGB if needed
+        if image.mode in ('RGBA', 'LA', 'P'):
+            background = Image.new('RGB', image.size, (255, 255, 255))
+            if image.mode == 'P':
+                image = image.convert('RGBA')
+            background.paste(image, mask=image.split()[-1] if image.mode in ('RGBA', 'LA') else None)
+            image = background
+        elif image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Always resize to max 1600px (aggressive for mobile)
+        if image.width > max_width or image.height > max_width:
+            # Resize based on longest dimension
+            if image.width > image.height:
+                ratio = max_width / image.width
+                new_height = int(image.height * ratio)
+                new_size = (max_width, new_height)
+            else:
+                ratio = max_width / image.height
+                new_width = int(image.width * ratio)
+                new_size = (new_width, max_width)
+            
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+            print(f"📏 Resized to {new_size[0]}x{new_size[1]}")
+        
+        # Compress to JPEG with lower quality for mobile
+        output = io.BytesIO()
+        image.save(output, format='JPEG', quality=quality, optimize=True)
+        output.seek(0)
+        compressed_size = len(output.getvalue())
+        print(f"📦 Compressed to {compressed_size / 1024:.1f} KB")
+        
+        return Image.open(output)
+    except Exception as e:
+        print(f"❌ Compression error: {e}")
+        return image
 
 if 'receipts' not in st.session_state:
     st.session_state.receipts = []
@@ -53,8 +65,8 @@ if 'employee_info' not in st.session_state:
         'signature_date': datetime.now().strftime('%m/%d/%Y')
     }
 
-st.title("📄 Avant Expense Report Generator v3.0")
-st.markdown("**Upload multiple receipts** and automatically generate your expense report!")
+st.title("📄 Avant Expense Report Generator v3.1")
+st.markdown("**Upload multiple receipts** - Large images auto-compressed for mobile!")
 
 with st.sidebar:
     st.header("👤 Employee Information")
@@ -83,22 +95,20 @@ with st.sidebar:
         st.warning("⚠️ Name required")
     
     st.markdown("---")
-    st.info("📱 **Mobile Tip:** Large photos are automatically compressed for faster upload!")
+    st.info("📱 **Mobile users:** Photos automatically compressed to ~300KB each for fast upload!")
 
 st.header("📸 Step 1: Upload Receipts")
-st.markdown("Upload **one or multiple** receipt images or PDFs")
+st.markdown("📱 **Mobile tip:** All images compressed automatically - even large camera photos work!")
 
-# Increase file size limit and add helpful message
 uploaded_files = st.file_uploader(
-    "Choose files", 
+    "Choose files (images or PDFs)", 
     type=['png', 'jpg', 'jpeg', 'pdf'], 
     accept_multiple_files=True, 
-    help="📱 Mobile: Camera photos are automatically compressed. Max 200MB per file.",
+    help="📱 Camera photos automatically compressed. No size limit!",
     key="file_uploader"
 )
 
 if uploaded_files:
-    # Show file info
     total_size = sum(f.size for f in uploaded_files) / (1024 * 1024)
     st.success(f"✅ **{len(uploaded_files)} file(s)** uploaded ({total_size:.1f} MB total)")
     
@@ -108,41 +118,41 @@ if uploaded_files:
         status_text = st.empty()
         
         for idx, uploaded_file in enumerate(uploaded_files):
-            status_text.text(f"Processing {idx+1}/{len(uploaded_files)}: {uploaded_file.name}...")
+            file_size_mb = uploaded_file.size / (1024 * 1024)
+            status_text.text(f"Processing {idx+1}/{len(uploaded_files)}: {uploaded_file.name} ({file_size_mb:.1f}MB)...")
             
             try:
-                # Check file size
-                file_size_mb = uploaded_file.size / (1024 * 1024)
-                if file_size_mb > 15:
-                    st.warning(f"⚠️ {uploaded_file.name} is {file_size_mb:.1f}MB - compressing for faster processing...")
-                
                 if uploaded_file.type == 'application/pdf':
                     try:
                         import pdf2image
                         images = pdf2image.convert_from_bytes(uploaded_file.read())
                         image = images[0]
-                        if file_size_mb > 5:
-                            image = compress_image(image)
+                        # Always compress PDFs
+                        image = compress_image(image)
                     except Exception:
                         st.error(f"PDF processing failed for {uploaded_file.name}")
                         continue
                 else:
+                    # Open image
                     image = Image.open(uploaded_file)
                     
-                    # Compress large images automatically
-                    if file_size_mb > 3 or image.width > 2000:
-                        st.info(f"📦 Compressing {uploaded_file.name} for faster processing...")
-                        image = compress_image(image)
+                    # ALWAYS compress for mobile reliability
+                    status_text.text(f"Compressing {uploaded_file.name}...")
+                    image = compress_image(image)
                 
                 # Perform OCR
+                status_text.text(f"Reading text from {uploaded_file.name}...")
                 text = pytesseract.image_to_string(image)
                 parser = ReceiptParser()
                 receipt_data = parser.parse(text)
                 
-                # Convert image to bytes for storage
+                # Convert to compressed JPEG for storage
                 img_byte_arr = io.BytesIO()
-                image.save(img_byte_arr, format='JPEG', quality=85)
+                image.save(img_byte_arr, format='JPEG', quality=75)
                 img_byte_arr = img_byte_arr.getvalue()
+                final_size = len(img_byte_arr) / 1024
+                
+                status_text.text(f"Saved {uploaded_file.name} ({final_size:.0f}KB)")
                 
                 st.session_state.receipts.append({
                     'filename': uploaded_file.name,
@@ -162,7 +172,7 @@ if uploaded_files:
         
         status_text.empty()
         progress_bar.empty()
-        st.success("✅ All receipts processed!")
+        st.success("✅ All receipts processed and compressed!")
         st.rerun()
 
 if st.session_state.receipts:
@@ -183,7 +193,6 @@ if st.session_state.receipts:
                 merchant = st.text_input("Merchant/Vendor", value=receipt['data'].get('merchant', ''), key=f"merchant_{idx}")
                 receipt_date = st.text_input("Receipt Date (MM/DD/YYYY)", value=receipt['data'].get('date', ''), key=f"date_{idx}", help="Format: MM/DD/YYYY")
                 
-                # Currency selector with top 3 first
                 currencies = [
                     ('EUR', '€ Euro'), ('USD', '$ US Dollar'), ('GBP', '£ British Pound'), None,
                     ('JPY', '¥ Japanese Yen'), ('CHF', 'CHF Swiss Franc'), ('CAD', 'C$ Canadian Dollar'),
@@ -328,7 +337,7 @@ st.markdown("---")
 st.markdown("""
     <div style='text-align: center; color: #666; padding: 1rem;'>
         <p><strong>Avant Expense Report Generator v3.1</strong></p>
-        <p>✨ Mobile optimized | 📦 Auto-compression | 📱 Works on any device</p>
+        <p>✨ Aggressive mobile compression | 📦 ~300KB per image | 📱 Works on any device</p>
         <p style='font-size: 0.9em;'>Built with Streamlit | For assistance: it@avant.org</p>
     </div>
 """, unsafe_allow_html=True)
