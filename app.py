@@ -16,6 +16,34 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+def compress_image(image, max_width=1920, quality=85):
+    """Compress image for faster mobile upload and processing"""
+    # Convert to RGB if needed (handles RGBA, P, etc.)
+    if image.mode in ('RGBA', 'LA', 'P'):
+        background = Image.new('RGB', image.size, (255, 255, 255))
+        if image.mode == 'P':
+            image = image.convert('RGBA')
+        background.paste(image, mask=image.split()[-1] if image.mode in ('RGBA', 'LA') else None)
+        image = background
+    elif image.mode != 'RGB':
+        image = image.convert('RGB')
+    
+    # Resize if too large
+    if image.width > max_width:
+        ratio = max_width / image.width
+        new_height = int(image.height * ratio)
+        image = image.resize((max_width, new_height), Image.Resampling.LANCZOS)
+        print(f"📏 Resized image to {max_width}x{new_height}")
+    
+    # Compress to JPEG
+    output = io.BytesIO()
+    image.save(output, format='JPEG', quality=quality, optimize=True)
+    output.seek(0)
+    compressed_size = len(output.getvalue())
+    print(f"📦 Compressed to {compressed_size / 1024:.1f} KB")
+    
+    return Image.open(output)
+
 if 'receipts' not in st.session_state:
     st.session_state.receipts = []
 if 'employee_info' not in st.session_state:
@@ -53,14 +81,26 @@ with st.sidebar:
         st.success(f"✅ {name}")
     else:
         st.warning("⚠️ Name required")
+    
+    st.markdown("---")
+    st.info("📱 **Mobile Tip:** Large photos are automatically compressed for faster upload!")
 
 st.header("📸 Step 1: Upload Receipts")
 st.markdown("Upload **one or multiple** receipt images or PDFs")
 
-uploaded_files = st.file_uploader("Choose files", type=['png', 'jpg', 'jpeg', 'pdf'], accept_multiple_files=True, help="📱 On mobile: Tap to use camera or choose from gallery. PDFs supported!")
+# Increase file size limit and add helpful message
+uploaded_files = st.file_uploader(
+    "Choose files", 
+    type=['png', 'jpg', 'jpeg', 'pdf'], 
+    accept_multiple_files=True, 
+    help="📱 Mobile: Camera photos are automatically compressed. Max 200MB per file.",
+    key="file_uploader"
+)
 
 if uploaded_files:
-    st.success(f"✅ **{len(uploaded_files)} file(s)** uploaded")
+    # Show file info
+    total_size = sum(f.size for f in uploaded_files) / (1024 * 1024)
+    st.success(f"✅ **{len(uploaded_files)} file(s)** uploaded ({total_size:.1f} MB total)")
     
     if st.button("🔍 Extract Data from All Receipts", type="primary"):
         st.session_state.receipts = []
@@ -71,23 +111,37 @@ if uploaded_files:
             status_text.text(f"Processing {idx+1}/{len(uploaded_files)}: {uploaded_file.name}...")
             
             try:
+                # Check file size
+                file_size_mb = uploaded_file.size / (1024 * 1024)
+                if file_size_mb > 15:
+                    st.warning(f"⚠️ {uploaded_file.name} is {file_size_mb:.1f}MB - compressing for faster processing...")
+                
                 if uploaded_file.type == 'application/pdf':
                     try:
                         import pdf2image
                         images = pdf2image.convert_from_bytes(uploaded_file.read())
                         image = images[0]
+                        if file_size_mb > 5:
+                            image = compress_image(image)
                     except Exception:
                         st.error(f"PDF processing failed for {uploaded_file.name}")
                         continue
                 else:
                     image = Image.open(uploaded_file)
+                    
+                    # Compress large images automatically
+                    if file_size_mb > 3 or image.width > 2000:
+                        st.info(f"📦 Compressing {uploaded_file.name} for faster processing...")
+                        image = compress_image(image)
                 
+                # Perform OCR
                 text = pytesseract.image_to_string(image)
                 parser = ReceiptParser()
                 receipt_data = parser.parse(text)
                 
+                # Convert image to bytes for storage
                 img_byte_arr = io.BytesIO()
-                image.save(img_byte_arr, format='JPEG')
+                image.save(img_byte_arr, format='JPEG', quality=85)
                 img_byte_arr = img_byte_arr.getvalue()
                 
                 st.session_state.receipts.append({
@@ -131,18 +185,10 @@ if st.session_state.receipts:
                 
                 # Currency selector with top 3 first
                 currencies = [
-                    ('EUR', '€ Euro'),
-                    ('USD', '$ US Dollar'),
-                    ('GBP', '£ British Pound'),
-                    None,
-                    ('JPY', '¥ Japanese Yen'),
-                    ('CHF', 'CHF Swiss Franc'),
-                    ('CAD', 'C$ Canadian Dollar'),
-                    ('AUD', 'A$ Australian Dollar'),
-                    ('CNY', '¥ Chinese Yuan'),
-                    ('INR', '₹ Indian Rupee'),
-                    ('MXN', '$ Mexican Peso'),
-                    ('BRL', 'R$ Brazilian Real'),
+                    ('EUR', '€ Euro'), ('USD', '$ US Dollar'), ('GBP', '£ British Pound'), None,
+                    ('JPY', '¥ Japanese Yen'), ('CHF', 'CHF Swiss Franc'), ('CAD', 'C$ Canadian Dollar'),
+                    ('AUD', 'A$ Australian Dollar'), ('CNY', '¥ Chinese Yuan'), ('INR', '₹ Indian Rupee'),
+                    ('MXN', '$ Mexican Peso'), ('BRL', 'R$ Brazilian Real'),
                 ]
                 
                 currency_display = []
@@ -187,9 +233,9 @@ if st.session_state.receipts:
                 
                 elif selected_category == 'Ministry Entertainment':
                     st.markdown("**Ministry Entertainment Details** *(required)*")
-                    who = st.text_input("Who (Person Being Entertained)*", value=receipt.get('who', ''), key=f"who_{idx}", placeholder="e.g., Pastor John, Local Ministry Leader", help="Who was entertained?")
+                    who = st.text_input("Who (Person Being Entertained)*", value=receipt.get('who', ''), key=f"who_{idx}", placeholder="e.g., Pastor John", help="Who was entertained?")
                     detected_city = receipt['data'].get('city', receipt['data'].get('address', '').split(',')[0] if ',' in receipt['data'].get('address', '') else '')
-                    where = st.text_input("Where (City)*", value=receipt.get('where', detected_city), key=f"where_{idx}", placeholder="e.g., Madrid, Barcelona", help="City where entertainment took place")
+                    where = st.text_input("Where (City)*", value=receipt.get('where', detected_city), key=f"where_{idx}", placeholder="e.g., Madrid", help="City where entertainment took place")
                     receipt['who'] = who
                     receipt['where'] = where
                 
@@ -281,8 +327,8 @@ if st.session_state.receipts:
 st.markdown("---")
 st.markdown("""
     <div style='text-align: center; color: #666; padding: 1rem;'>
-        <p><strong>Avant Expense Report Generator v3.0</strong></p>
-        <p>✨ All 7 fixes applied | 📱 Mobile support | 📄 PDF support | 🌍 Currency selection</p>
+        <p><strong>Avant Expense Report Generator v3.1</strong></p>
+        <p>✨ Mobile optimized | 📦 Auto-compression | 📱 Works on any device</p>
         <p style='font-size: 0.9em;'>Built with Streamlit | For assistance: it@avant.org</p>
     </div>
 """, unsafe_allow_html=True)
